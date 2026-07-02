@@ -8,3 +8,7 @@
 #define VIAL_UNLOCK_COMBO_COLS { 0, 1 }
 
 #define DYNAMIC_KEYMAP_LAYER_COUNT 5
+
+/* This board is hand-wired with diodes reversed from the repo default */
+#undef DIODE_DIRECTION
+#define DIODE_DIRECTION ROW2COL
