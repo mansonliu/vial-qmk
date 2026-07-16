@@ -1,15 +1,17 @@
-/* Claude Code status display + control pad for splitkb Zima
+/* Vial keymap + Claude Code status display for splitkb Zima
  *
- * Host pushes state over Raw HID (usage page 0xFF60, usage 0x61, 32-byte
- * reports). Protocol, first byte = command:
- *   0x01  model name   — bytes 1..: NUL-terminated ASCII, max 21 chars
- *   0x02  agent status — byte 1: 0 idle / 1 working / 2 waiting / 3 error
- *   0x03  info line    — bytes 1..: NUL-terminated ASCII (cwd, context %, ...)
- * Firmware never talks back; keys are plain keystrokes into the focused app.
+ * Coexists with VIA/Vial on the shared Raw HID interface: host messages use
+ * command id 0x63 ('c'), which VIA routes to raw_hid_receive_kb(). 32-byte
+ * reports, layout:
+ *   byte 0 = 0x63 magic
+ *   byte 1 = command: 0x01 model / 0x02 status / 0x03 info
+ *   byte 2.. = payload (NUL-terminated ASCII for text, max 21 chars;
+ *              status byte: 0 idle / 1 working / 2 waiting / 3 error)
  */
 #include QMK_KEYBOARD_H
-#include "raw_hid.h"
 #include <string.h>
+
+#define CLAUDE_MAGIC 0x63
 
 enum claude_cmd {
     CMD_MODEL  = 0x01,
@@ -41,25 +43,35 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         KC_TAB,  KC_DOWN, KC_ENT,
         KC_1,    KC_2,    KC_3
     ),
-    [1] = LAYOUT_ortho_4x3( /* Audio / firmware */
+    [1] = LAYOUT_ortho_4x3( /* Firmware / misc */
         QK_BOOT, _______, XXXXXXX,
-        AU_ON,   AU_OFF,  XXXXXXX,
-        CK_TOGG, XXXXXXX, CK_UP,
-        CK_RST,  XXXXXXX, CK_DOWN
+        XXXXXXX, XXXXXXX, XXXXXXX,
+        XXXXXXX, XXXXXXX, XXXXXXX,
+        XXXXXXX, XXXXXXX, XXXXXXX
     ),
     [2] = LAYOUT_ortho_4x3( /* RGB / haptic */
         UG_TOGG, UG_NEXT, _______,
         UG_HUEU, UG_SATU, UG_VALU,
         UG_HUED, UG_SATD, UG_VALD,
         HF_TOGG, HF_FDBK, HF_CONT
+    ),
+    [3] = LAYOUT_ortho_4x3(
+        _______, _______, _______,
+        _______, _______, _______,
+        _______, _______, _______,
+        _______, _______, _______
     )
 };
 
-// Clockwise = down: matches walking through Claude Code menu options.
-bool encoder_update_user(uint8_t index, bool clockwise) {
-    tap_code(clockwise ? KC_DOWN : KC_UP);
-    return false;
-}
+#ifdef ENCODER_MAP_ENABLE
+// CCW = up, CW = down: matches walking through Claude Code menu options.
+const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
+    [0] = {ENCODER_CCW_CW(KC_UP, KC_DOWN)},
+    [1] = {ENCODER_CCW_CW(KC_VOLD, KC_VOLU)},
+    [2] = {ENCODER_CCW_CW(UG_VALD, UG_VALU)},
+    [3] = {ENCODER_CCW_CW(_______, _______)}
+};
+#endif
 
 #ifdef RGBLIGHT_ENABLE
 static void apply_status_rgb(void) {
@@ -94,13 +106,17 @@ static void copy_payload(char *dst, const uint8_t *src, uint8_t maxlen) {
     dst[i] = '\0';
 }
 
-void raw_hid_receive(uint8_t *data, uint8_t length) {
-    switch (data[0]) {
+void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
+    if (data[0] != CLAUDE_MAGIC) {
+        data[0] = 0xFF; // id_unhandled
+        return;
+    }
+    switch (data[1]) {
         case CMD_MODEL:
-            copy_payload(model_str, data + 1, TEXT_COLS);
+            copy_payload(model_str, data + 2, TEXT_COLS);
             break;
         case CMD_STATUS: {
-            uint8_t new_status = data[1] <= ST_ERROR ? data[1] : ST_ERROR;
+            uint8_t new_status = data[2] <= ST_ERROR ? data[2] : ST_ERROR;
             if (new_status != claude_status) {
                 claude_status = new_status;
 #ifdef HAPTIC_ENABLE
@@ -113,9 +129,10 @@ void raw_hid_receive(uint8_t *data, uint8_t length) {
             break;
         }
         case CMD_INFO:
-            copy_payload(info_str, data + 1, TEXT_COLS);
+            copy_payload(info_str, data + 2, TEXT_COLS);
             break;
         default:
+            data[0] = 0xFF;
             return;
     }
     last_hid_time = timer_read32();
