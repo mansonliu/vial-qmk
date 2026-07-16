@@ -10,3 +10,9 @@
 
 // Screen stays on longer than default 60s; host pushes re-wake it anyway.
 #define OLED_TIMEOUT 180000
+
+// Flash budget: keep only the breathing animation (used for "working").
+#undef RGBLIGHT_EFFECT_RAINBOW_MOOD
+#undef RGBLIGHT_EFFECT_RAINBOW_SWIRL
+#undef RGBLIGHT_EFFECT_STATIC_GRADIENT
+#undef RGBLIGHT_EFFECT_TWINKLE

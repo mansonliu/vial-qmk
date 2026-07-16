@@ -141,49 +141,86 @@ void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
 }
 
 #ifdef OLED_ENABLE
-static void write_padded_ln(const char *s) {
-    uint8_t len = 0;
-    for (; s[len] && len < TEXT_COLS; len++) {
-        oled_write_char(s[len], false);
+#    include "bigfont.h"
+
+// 12x16 pixel-doubled + bolded rendering: two big lines on the 128x32 panel.
+#    define BIG_COLS 10 // 128 / 12
+
+// Vertically stretch an 8-bit font column into 16 bits (each pixel doubled).
+static uint16_t stretch_col(uint8_t b) {
+    uint16_t r = 0;
+    for (uint8_t i = 0; i < 8; i++) {
+        if (b & (1 << i)) r |= (uint16_t)3 << (i * 2);
     }
-    for (; len < TEXT_COLS; len++) {
-        oled_write_char(' ', false);
+    return r;
+}
+
+// Draw s (uppercased, max 10 chars) centered on OLED pages `page` and page+1.
+static void draw_big_line(const char *s, uint8_t page) {
+    uint8_t len = 0;
+    while (s[len] && len < BIG_COLS)
+        len++;
+    uint8_t  x0    = (OLED_DISPLAY_WIDTH - len * 12) / 2;
+    uint16_t base  = (uint16_t)page * OLED_DISPLAY_WIDTH;
+    uint16_t prev  = 0;
+    for (uint8_t x = 0; x < OLED_DISPLAY_WIDTH; x++) {
+        uint16_t col = 0;
+        if (x >= x0 && x < x0 + len * 12) {
+            uint8_t rel = x - x0;
+            char    c   = s[rel / 12];
+            if (c >= 'a' && c <= 'z') c -= 0x20;
+            if (c < 0x20 || c > 0x5F) c = '?';
+            uint8_t fb = pgm_read_byte(&big_font[(c - 0x20) * 6 + (rel % 12) / 2]);
+            col        = stretch_col(fb);
+        }
+        uint16_t out = col | prev; // horizontal smear = bold
+        prev         = col;
+        oled_write_raw_byte(out & 0xFF, base + x);
+        oled_write_raw_byte(out >> 8, base + OLED_DISPLAY_WIDTH + x);
     }
 }
 
 bool oled_task_user(void) {
-    if (!hid_seen || timer_elapsed32(last_hid_time) > HOST_STALE_MS) {
-        write_padded_ln("Claude Code");
-        write_padded_ln("");
-        write_padded_ln("waiting for host...");
-        char layer_line[TEXT_COLS + 1];
-        snprintf(layer_line, sizeof(layer_line), "layer %d", get_highest_layer(layer_state));
-        write_padded_ln(layer_line);
-        return false;
-    }
-
-    char line[TEXT_COLS + 1];
-    snprintf(line, sizeof(line), "Claude Code   L%d", get_highest_layer(layer_state));
-    write_padded_ln(line);
-    write_padded_ln(model_str[0] ? model_str : "(no model)");
-
     static const char spinner[4] = {'|', '/', '-', '\\'};
-    switch (claude_status) {
-        case ST_WORKING:
-            snprintf(line, sizeof(line), "working %c", spinner[(timer_read32() / 250) & 3]);
-            break;
-        case ST_WAITING:
-            snprintf(line, sizeof(line), ">> NEEDS INPUT <<");
-            break;
-        case ST_ERROR:
-            snprintf(line, sizeof(line), "!! ERROR !!");
-            break;
-        default:
-            snprintf(line, sizeof(line), "idle");
-            break;
+    char              top[BIG_COLS + 1];
+    char              bottom[BIG_COLS + 1];
+
+    if (!hid_seen || timer_elapsed32(last_hid_time) > HOST_STALE_MS) {
+        strcpy(top, "CLAUDE");
+        strcpy(bottom, "NO HOST");
+    } else {
+        memcpy(top, model_str, BIG_COLS);
+        top[BIG_COLS] = '\0';
+        if (!top[0]) strcpy(top, "CLAUDE");
+        switch (claude_status) {
+            case ST_WORKING:
+                strcpy(bottom, "WORKING ");
+                bottom[8] = spinner[(timer_read32() / 250) & 3];
+                bottom[9] = '\0';
+                break;
+            case ST_WAITING:
+                // Blink for attention: text 600ms, blank 300ms.
+                strcpy(bottom, (timer_read32() % 900) < 600 ? "NEED INPUT" : "");
+                break;
+            case ST_ERROR:
+                strcpy(bottom, "! ERROR !");
+                break;
+            default:
+                strcpy(bottom, "idle");
+                break;
+        }
     }
-    write_padded_ln(line);
-    write_padded_ln(info_str);
+
+    // Only repaint when content changed: full-buffer writes are expensive.
+    static char shown[2 * (BIG_COLS + 1)];
+    char        now[2 * (BIG_COLS + 1)];
+    memcpy(now, top, BIG_COLS + 1);
+    memcpy(now + BIG_COLS + 1, bottom, BIG_COLS + 1);
+    if (memcmp(now, shown, sizeof(now)) != 0) {
+        memcpy(shown, now, sizeof(now));
+        draw_big_line(top, 0);
+        draw_big_line(bottom, 2);
+    }
     return false;
 }
 #endif
