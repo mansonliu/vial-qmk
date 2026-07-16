@@ -96,6 +96,21 @@ static void apply_status_rgb(void) {
             break;
     }
 }
+
+// While waiting for input, blink the underglow in phase with the OLED text
+// (600ms on / 300ms off — same timer phase as the NEED INPUT blink).
+void housekeeping_task_user(void) {
+    static bool blink_on = true;
+    if (claude_status == ST_WAITING) {
+        bool on = (timer_read32() % 900) < 600;
+        if (on != blink_on) {
+            blink_on = on;
+            rgblight_sethsv_noeeprom(43, 255, on ? 200 : 0);
+        }
+    } else {
+        blink_on = true;
+    }
+}
 #endif
 
 static void copy_payload(char *dst, const uint8_t *src, uint8_t maxlen) {
