@@ -10,10 +10,6 @@
  */
 #include QMK_KEYBOARD_H
 #include <string.h>
-#ifdef AUDIO_ENABLE
-static float waiting_song[][2] = SONG(Q__NOTE(_A5), Q__NOTE(_E6));
-#endif
-
 #define CLAUDE_MAGIC 0x63
 
 enum claude_cmd {
@@ -73,7 +69,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 // CCW = up, CW = down: matches walking through Claude Code menu options.
 const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
     [0] = {ENCODER_CCW_CW(KC_UP, KC_DOWN)},
-    [1] = {ENCODER_CCW_CW(KC_PGUP, KC_PGDN)},
+    [1] = {ENCODER_CCW_CW(KC_VOLD, KC_VOLU)},
     [2] = {ENCODER_CCW_CW(UG_VALD, UG_VALU)},
     [3] = {ENCODER_CCW_CW(_______, _______)}
 };
@@ -150,9 +146,6 @@ void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
             uint8_t new_status = data[2] <= ST_ERROR ? data[2] : ST_ERROR;
             if (new_status != claude_status) {
                 claude_status = new_status;
-#ifdef AUDIO_ENABLE
-                if (claude_status == ST_WAITING) PLAY_SONG(waiting_song);
-#endif
 #ifdef RGBLIGHT_ENABLE
                 apply_status_rgb();
 #endif
