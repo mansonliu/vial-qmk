@@ -84,7 +84,7 @@ static void apply_status_rgb(void) {
         case ST_WAITING:
             rgblight_enable_noeeprom();
             rgblight_mode_noeeprom(RGBLIGHT_MODE_STATIC_LIGHT);
-            rgblight_sethsv_noeeprom(21, 255, 150); // orange
+            rgblight_sethsv_noeeprom(43, 255, 200); // yellow
             break;
         case ST_ERROR:
             rgblight_enable_noeeprom();
