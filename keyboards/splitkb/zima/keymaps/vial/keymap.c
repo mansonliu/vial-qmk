@@ -10,6 +10,9 @@
  */
 #include QMK_KEYBOARD_H
 #include <string.h>
+#ifdef AUDIO_ENABLE
+static float waiting_song[][2] = SONG(Q__NOTE(_A5), Q__NOTE(_E6));
+#endif
 
 #define CLAUDE_MAGIC 0x63
 
@@ -70,7 +73,7 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 // CCW = up, CW = down: matches walking through Claude Code menu options.
 const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
     [0] = {ENCODER_CCW_CW(KC_UP, KC_DOWN)},
-    [1] = {ENCODER_CCW_CW(KC_VOLD, KC_VOLU)},
+    [1] = {ENCODER_CCW_CW(KC_PGUP, KC_PGDN)},
     [2] = {ENCODER_CCW_CW(UG_VALD, UG_VALU)},
     [3] = {ENCODER_CCW_CW(_______, _______)}
 };
@@ -81,8 +84,8 @@ static void apply_status_rgb(void) {
     switch (claude_status) {
         case ST_WORKING:
             rgblight_enable_noeeprom();
-            rgblight_mode_noeeprom(RGBLIGHT_MODE_BREATHING + 1);
-            rgblight_sethsv_noeeprom(128, 255, 120); // cyan breathing
+            rgblight_mode_noeeprom(RGBLIGHT_MODE_STATIC_LIGHT);
+            rgblight_sethsv_noeeprom(128, 255, 120); // cyan; breathing in housekeeping
             break;
         case ST_WAITING:
             rgblight_enable_noeeprom();
@@ -100,16 +103,26 @@ static void apply_status_rgb(void) {
     }
 }
 
-// While waiting for input, blink the underglow in phase with the OLED text
-// (600ms on / 300ms off — same timer phase as the NEED INPUT blink).
+// Manual underglow animation (the rgblight effect engine is compiled out):
+// waiting = yellow blink in phase with the INPUT text, working = cyan breathe.
 void housekeeping_task_user(void) {
-    static bool blink_on = true;
+    static bool     blink_on = true;
+    static uint32_t next_upd = 0;
     if (claude_status == ST_WAITING) {
         bool on = (timer_read32() % 900) < 600;
         if (on != blink_on) {
             blink_on = on;
             rgblight_sethsv_noeeprom(43, 255, on ? 200 : 0);
         }
+    } else if (claude_status == ST_WORKING) {
+        uint32_t now = timer_read32();
+        if (now >= next_upd) {
+            next_upd = now + 40;
+            uint16_t t   = now & 2047; // ~2s triangle wave
+            uint8_t  amp = t < 1024 ? (t >> 3) : ((2047 - t) >> 3); // 0..127
+            rgblight_sethsv_noeeprom(128, 255, 20 + amp);
+        }
+        blink_on = true;
     } else {
         blink_on = true;
     }
@@ -137,8 +150,8 @@ void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
             uint8_t new_status = data[2] <= ST_ERROR ? data[2] : ST_ERROR;
             if (new_status != claude_status) {
                 claude_status = new_status;
-#ifdef HAPTIC_ENABLE
-                if (claude_status == ST_WAITING) haptic_play();
+#ifdef AUDIO_ENABLE
+                if (claude_status == ST_WAITING) PLAY_SONG(waiting_song);
 #endif
 #ifdef RGBLIGHT_ENABLE
                 apply_status_rgb();

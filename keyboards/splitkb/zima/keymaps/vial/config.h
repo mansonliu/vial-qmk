@@ -8,11 +8,20 @@
 
 #define DYNAMIC_KEYMAP_LAYER_COUNT 4
 
+// No clicky (saves flash); the speaker only chirps on WAITING.
+#undef AUDIO_CLICKY
+
 // Screen stays on longer than default 60s; host pushes re-wake it anyway.
 #define OLED_TIMEOUT 180000
 
-// Flash budget: keep only the breathing animation (used for "working").
+// Flash budget: no rgblight animations at all — the working "breathing" is
+// done manually in housekeeping_task_user (cheaper than the effect engine).
+#undef RGBLIGHT_EFFECT_BREATHING
 #undef RGBLIGHT_EFFECT_RAINBOW_MOOD
 #undef RGBLIGHT_EFFECT_RAINBOW_SWIRL
 #undef RGBLIGHT_EFFECT_STATIC_GRADIENT
 #undef RGBLIGHT_EFFECT_TWINKLE
+
+// More flash savings.
+#define NO_ACTION_ONESHOT
+#define STARTUP_SONG SONG(NO_SOUND)
