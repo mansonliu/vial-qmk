@@ -17,6 +17,8 @@ enum claude_cmd {
     CMD_STATUS = 0x02,
     CMD_INFO   = 0x03,
     CMD_USAGE  = 0x04, // payload: five-hour %, seven-day % (0-100, 255 = unknown)
+    CMD_CLIENT = 0x05, // payload: 0 Claude / 1 Codex
+    CMD_ANIMATION = 0x06, // payload: host-configured Codex orbit parameters
 };
 
 enum claude_status {
@@ -26,7 +28,13 @@ enum claude_status {
     ST_ERROR,
 };
 
+enum display_client {
+    CLIENT_CLAUDE = 0,
+    CLIENT_CODEX,
+};
+
 #define TEXT_COLS 21
+#define P_WIDTH 32
 // Consider host gone after this long without any push.
 #define HOST_STALE_MS 3600000UL
 
@@ -35,6 +43,14 @@ static char     info_str[TEXT_COLS + 1];
 static uint8_t  claude_status = ST_IDLE;
 static uint8_t  usage_5h      = 255;
 static uint8_t  usage_7d      = 255;
+static uint8_t  display_client = CLIENT_CLAUDE;
+static uint8_t  codex_left = 3, codex_right = 27;
+static uint8_t  codex_top = 4, codex_bottom = 11;
+static uint8_t  codex_h_segments = 4;
+static uint8_t  codex_dot_count = 4, codex_dot_spacing = 1;
+static uint8_t  codex_dot_width = 4, codex_dot_bits = 0x3C;
+static uint16_t codex_frame_ms = 120;
+static uint8_t  codex_anim_revision = 0;
 static uint32_t last_hid_time = 0;
 static bool     hid_seen      = false;
 
@@ -159,6 +175,38 @@ void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
             usage_5h = data[2];
             usage_7d = data[3];
             break;
+        case CMD_CLIENT:
+            display_client = data[2] == CLIENT_CODEX ? CLIENT_CODEX : CLIENT_CLAUDE;
+            break;
+        case CMD_ANIMATION: {
+            uint8_t left       = data[2];
+            uint8_t right      = data[3];
+            uint8_t top        = data[4];
+            uint8_t bottom     = data[5];
+            uint8_t h_segments = data[6];
+            uint8_t dot_count  = data[7];
+            uint8_t spacing    = data[8];
+            uint8_t frame_10ms = data[9];
+            uint8_t dot_width  = data[10];
+            uint8_t dot_bits   = data[11];
+            if (left < right && right < P_WIDTH && top < bottom && bottom < 16 &&
+                h_segments >= 1 && h_segments <= 12 && dot_count >= 1 && dot_count <= 8 &&
+                spacing >= 1 && spacing <= 8 && frame_10ms >= 3 && dot_width >= 1 &&
+                dot_width <= 6 && right + dot_width <= P_WIDTH && dot_bits != 0) {
+                codex_left         = left;
+                codex_right        = right;
+                codex_top          = top;
+                codex_bottom       = bottom;
+                codex_h_segments   = h_segments;
+                codex_dot_count    = dot_count;
+                codex_dot_spacing  = spacing;
+                codex_frame_ms     = (uint16_t)frame_10ms * 10;
+                codex_dot_width    = dot_width;
+                codex_dot_bits     = dot_bits;
+                codex_anim_revision++;
+            }
+            break;
+        }
         default:
             data[0] = 0xFF;
             return;
@@ -175,8 +223,6 @@ void raw_hid_receive_kb(uint8_t *data, uint8_t length) {
 // Portrait mode (keyboard lies sideways): logical canvas is 32 wide x 128
 // tall (16 pages). Model letters stack vertically like a signboard, version
 // number is a small line below, and a fixed status cell sits at the bottom.
-#    define P_WIDTH 32
-
 oled_rotation_t oled_init_user(oled_rotation_t rotation) {
     return OLED_ROTATION_270;
 }
@@ -264,6 +310,45 @@ static void draw_spark(uint8_t frame) {
     }
 }
 
+static uint8_t codex_path_len(void) {
+    return 2 * (codex_h_segments + codex_bottom - codex_top);
+}
+
+// Convert one perimeter step into an x position and OLED page.
+static void codex_path_position(uint8_t pos, uint8_t *x, uint8_t *page) {
+    uint8_t h = codex_h_segments;
+    uint8_t v = codex_bottom - codex_top;
+    uint8_t w = codex_right - codex_left;
+    if (pos < h) {
+        *x = codex_left + ((uint16_t)w * pos + h / 2) / h;
+        *page = codex_top;
+    } else if ((pos -= h) < v) {
+        *x = codex_right;
+        *page = codex_top + pos;
+    } else if ((pos -= v) < h) {
+        *x = codex_right - ((uint16_t)w * pos + h / 2) / h;
+        *page = codex_bottom;
+    } else {
+        pos -= h;
+        *x = codex_left;
+        *page = codex_bottom - pos;
+    }
+}
+
+// Host-configured dots form a short train around an invisible rectangle.
+static void draw_codex(uint8_t frame) {
+    uint8_t path_len = codex_path_len();
+    for (uint8_t n = 0; n < codex_dot_count; n++) {
+        uint8_t offset = ((uint16_t)n * codex_dot_spacing) % path_len;
+        uint8_t pos    = (frame + path_len - offset) % path_len;
+        uint8_t x0, page;
+        codex_path_position(pos, &x0, &page);
+        uint16_t base = (uint16_t)page * P_WIDTH;
+        for (uint8_t x = x0; x < x0 + codex_dot_width; x++)
+            oled_write_raw_byte(codex_dot_bits, base + x);
+    }
+}
+
 bool oled_task_user(void) {
     bool stale = !hid_seen || timer_elapsed32(last_hid_time) > HOST_STALE_MS;
     uint8_t status = stale ? ST_IDLE : claude_status;
@@ -273,14 +358,25 @@ bool oled_task_user(void) {
     uint32_t        key;
 
     if (status == ST_WORKING) {
-        // Pulsing Claude spark, 32x48 centered (pages 5-10): 0-1-2-3-2-1 loop.
-        uint8_t t     = (timer_read32() / 150) % 6;
-        uint8_t frame = t < 4 ? t : 6 - t;
-        key           = 0x10000UL | frame;
-        if (key != shown_key) {
-            shown_key = key;
-            oled_clear();
-            draw_spark(frame);
+        if (display_client == CLIENT_CODEX) {
+            uint8_t path_len = codex_path_len();
+            uint8_t frame    = (timer_read32() / codex_frame_ms) % path_len;
+            key              = 0x11000000UL | ((uint32_t)codex_anim_revision << 8) | frame;
+            if (key != shown_key) {
+                shown_key = key;
+                oled_clear();
+                draw_codex(frame);
+            }
+        } else {
+            // Pulsing Claude spark, 32x48 centered: 0-1-2-3-2-1 loop.
+            uint8_t t     = (timer_read32() / 150) % 6;
+            uint8_t frame = t < 4 ? t : 6 - t;
+            key           = 0x10000UL | frame;
+            if (key != shown_key) {
+                shown_key = key;
+                oled_clear();
+                draw_spark(frame);
+            }
         }
     } else if (status == ST_WAITING) {
         // Full-screen "INPUT" in 18x24 caps, blinking 600ms on / 300ms off.
@@ -304,13 +400,15 @@ bool oled_task_user(void) {
             for (uint8_t k = 0; k < 5; k++)
                 draw_scaled_char(err[k], k * 3, 3);
         }
-    } else if (!stale && usage_5h <= 100 && ((timer_read32() / 5000) & 1)) {
-        // Idle, alternate phase: current-session (5h window) usage bar.
-        key = 0x50000UL | usage_5h;
+    } else if (!stale && (usage_5h <= 100 || usage_7d <= 100) && ((timer_read32() / 5000) & 1)) {
+        // Idle, alternate phase: prefer 5h usage, otherwise show the 7d limit.
+        bool    show_7d = usage_5h > 100;
+        uint8_t usage   = show_7d ? usage_7d : usage_5h;
+        key             = 0x50000UL | (show_7d ? 0x100UL : 0) | usage;
         if (key != shown_key) {
             shown_key = key;
             oled_clear();
-            draw_usage_col("5H", usage_5h, 0, P_WIDTH);
+            draw_usage_col(show_7d ? "7D" : "5H", usage, 0, P_WIDTH);
         }
     } else if (stale) {
         // No host signal: static Claude spark as the standby screen.
@@ -325,24 +423,24 @@ bool oled_task_user(void) {
         // digits all at 12x16, centered vertically.
         char letters[7], version[6];
         uint8_t li = 0, vi = 0;
-        bool    in_ver = false;
         for (uint8_t i = 0; model_str[i]; i++) {
             char c = model_str[i];
-            if (c == ' ') continue;
-            if (!in_ver && c >= '0' && c <= '9') in_ver = true;
-            if (!in_ver) {
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
                 if (li < 6) letters[li++] = c;
-            } else if (vi < 5) {
+            } else if ((c == '.' || (c >= '0' && c <= '9')) && vi < 5) {
                 version[vi++] = c;
             }
         }
         letters[li] = '\0';
         version[vi] = '\0';
         if (!letters[0]) {
-            strcpy(letters, "CLAUDE");
-            li         = 6;
-            version[0] = '\0';
-            vi         = 0;
+            if (version[0]) {
+                strcpy(letters, "GPT");
+                li = 3;
+            } else {
+                strcpy(letters, "CLAUDE");
+                li = 6;
+            }
         }
         uint8_t ver_pages = 0;
         for (uint8_t i = 0; version[i]; i++) ver_pages += version[i] == '.' ? 1 : 2;
