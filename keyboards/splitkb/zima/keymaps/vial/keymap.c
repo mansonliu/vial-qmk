@@ -249,6 +249,15 @@ static void draw_usage_col(const char *label, uint8_t v, uint8_t bar_x, uint8_t 
     draw_vbar(bar_x, bar_w, 1, 15, v);
 }
 
+// Blit one 32x48 spark frame centered on pages 5-10.
+static void draw_spark(uint8_t frame) {
+    for (uint8_t p = 0; p < 6; p++) {
+        uint16_t base = (uint16_t)(5 + p) * P_WIDTH;
+        for (uint8_t x = 0; x < P_WIDTH; x++)
+            oled_write_raw_byte(pgm_read_byte(&spark_frames[frame][p * P_WIDTH + x]), base + x);
+    }
+}
+
 bool oled_task_user(void) {
     bool stale = !hid_seen || timer_elapsed32(last_hid_time) > HOST_STALE_MS;
     uint8_t status = stale ? ST_IDLE : claude_status;
@@ -265,11 +274,7 @@ bool oled_task_user(void) {
         if (key != shown_key) {
             shown_key = key;
             oled_clear();
-            for (uint8_t p = 0; p < 6; p++) {
-                uint16_t base = (uint16_t)(5 + p) * P_WIDTH;
-                for (uint8_t x = 0; x < P_WIDTH; x++)
-                    oled_write_raw_byte(pgm_read_byte(&spark_frames[frame][p * P_WIDTH + x]), base + x);
-            }
+            draw_spark(frame);
         }
     } else if (status == ST_WAITING) {
         // Full-screen "INPUT" in 18x24 caps, blinking 600ms on / 300ms off.
@@ -301,6 +306,14 @@ bool oled_task_user(void) {
             oled_clear();
             draw_usage_col("5H", usage_5h, 0, P_WIDTH);
         }
+    } else if (stale) {
+        // No host signal: static Claude spark as the standby screen.
+        key = 0x60000UL;
+        if (key != shown_key) {
+            shown_key = key;
+            oled_clear();
+            draw_spark(3); // full-size frame, no pulse
+        }
     } else {
         // Idle: model name fills the screen — stacked letters and version
         // digits all at 12x16, centered vertically.
@@ -319,8 +332,8 @@ bool oled_task_user(void) {
         }
         letters[li] = '\0';
         version[vi] = '\0';
-        if (stale || !letters[0]) {
-            strcpy(letters, stale ? "NOHOST" : "CLAUDE");
+        if (!letters[0]) {
+            strcpy(letters, "CLAUDE");
             li         = 6;
             version[0] = '\0';
             vi         = 0;
