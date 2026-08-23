@@ -92,6 +92,13 @@ const uint16_t PROGMEM encoder_map[][NUM_ENCODERS][NUM_DIRECTIONS] = {
 #endif
 
 #ifdef RGBLIGHT_ENABLE
+// Underglow is purely status-driven; EEPROM may say "on, red static"
+// (the QMK default) and Vial's lighting tab can't reliably persist "off",
+// so force dark at boot and let host status pushes take it from there.
+void keyboard_post_init_user(void) {
+    rgblight_disable_noeeprom();
+}
+
 static void apply_status_rgb(void) {
     switch (claude_status) {
         case ST_WORKING:
@@ -120,6 +127,11 @@ static void apply_status_rgb(void) {
 void housekeeping_task_user(void) {
     static bool     blink_on = true;
     static uint32_t next_upd = 0;
+    // Host gone (crashed mid-task?): drop back to idle so the light goes out.
+    if (claude_status != ST_IDLE && timer_elapsed32(last_hid_time) > HOST_STALE_MS) {
+        claude_status = ST_IDLE;
+        apply_status_rgb();
+    }
     if (claude_status == ST_WAITING) {
         bool on = (timer_read32() % 900) < 600;
         if (on != blink_on) {
